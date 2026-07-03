@@ -1,0 +1,55 @@
+name: Deploy PDF-RAG
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install streamlit langchain-text-splitters sentence-transformers groq python-dotenv pypdf faiss-cpu numpy
+
+      - name: Lint Python files
+        run: |
+          python -m py_compile app.py utils/*.py
+
+      - name: Build Docker image locally
+        run: |
+          docker build -t pdf-rag:latest .
+
+      - name: Create SSH key for EC2
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+
+      - name: Copy repository to EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} 'mkdir -p /home/${{ secrets.EC2_USER }}/pdf-rag'
+          scp -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa -r ./* ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }}:/home/${{ secrets.EC2_USER }}/pdf-rag
+
+      - name: Deploy application on EC2
+        run: |
+          ssh -o StrictHostKeyChecking=no -i ~/.ssh/id_rsa ${{ secrets.EC2_USER }}@${{ secrets.EC2_HOST }} <<'EOF'
+            cd /home/${{ secrets.EC2_USER }}/pdf-rag
+            docker build -t pdf-rag:latest .
+            docker rm -f pdf-rag || true
+            docker run -d --name pdf-rag -p 80:8501 --restart unless-stopped pdf-rag:latest
+          EOF
